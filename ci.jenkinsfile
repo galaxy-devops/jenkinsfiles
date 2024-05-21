@@ -47,6 +47,44 @@ pipeline{
                 }
             }
         }
+
+        stage("QA"){
+            steps{
+                script{
+                    tools.PrintMes("Searching project on sonarQube","green")
+                    result = sonarapi.SearchProject("${JOB_NAME}")
+
+                    if (result == "false") {
+                        println("${JOB_NAME} --- project does not exist, will create it --- ${JOB_NAME}")
+                        sonarapi.CreateProject("${JOB_NAME}")
+                    } else {
+                        println("${JOB_NAME} --- project exist")
+                    }
+                    tools.PrintMes("Associate QP for ${JOB_NAME} ","green")
+                    // our pipeline name is demo-maven-service_UAT
+                    // qpName = "demo"
+                    qpName = "${JOB_NAME}".split("-")[0]
+                    sonarapi.ConfigQualityProfiles("${JOB_NAME}","java",qpName)
+                    if (result == "error"){
+                        error "Got problem to quality profile"
+                    }                    
+                    tools.PrintMes("Associate QG for ${JOB_NAME}","green")
+                    result = sonarapi.ConfigQualityGates("${JOB_NAME}",qpName)
+                    if (result == "error"){
+                        error "Got problem to quality gate"
+                    }
+                    tools.PrintMes("Start to evaluate code with sonarQube ","green")
+                    sonar.SonarScan("test","${JOB_NAME}","${JOB_NAME}","src")
+                    tools.PrintMes("Get the result","green")
+                    result = sonarapi.GetProjectStatus("${JOB_NAME}")
+                    if (result.toString().contains("ERROR")){
+                        error "code have something wrong within quality gate, please check it"
+                    }else{
+                        println(result)
+                    }
+                }
+            }
+        }        
     }
     post {
         always{
