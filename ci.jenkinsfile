@@ -1,0 +1,73 @@
+#!groovy
+
+@Library('jenkinslib') _
+
+def build = new org.devops.build()
+def tools = new org.devops.tools()
+
+//define this variable to avoid exception whenever manually build
+def runOpts
+
+String buildType = "${env.buildType}"
+String buildShell = "${env.buildShell}"
+String srcUrl="${env.srcUrl}"
+String branchName="${env.branchName}"
+
+//if true then indicate that from webhook
+//else to show that via manipulation by human being
+if ("${runOpts}" == "GitlabPush"){
+    branchName = branch - "refs/heads/"
+    currentBuild.description = "Trigger by ${userName} ${branchName}"
+} else {
+    currentBuild.description = "Manually trigger building on ${branchName}"
+}
+
+// pipeline
+pipeline{
+    agent any
+    stages{
+        stage('CheckOut'){
+            steps{
+                script{
+                    tools.PrintMes("Retrieve the code","green")
+                    if ("${runOpts}" == "GitlabPush"){
+                        branchName = branch - "refs/heads/"
+                    }
+                    tools.PrintMes("The branch is ${branchName}","green")               
+                    checkout([$class: 'GitSCM', branches: [[name: "${branchName}"]], extensions: [], userRemoteConfigs: [[url: "${srcUrl}"]]])
+                }
+            }
+        }
+
+        stage('Build'){
+            steps{
+                script{
+                    tools.PrintMes("Start to building","green")
+                    build.Build(buildType,buildShell)
+                }
+            }
+        }
+    }
+    post {
+        always{
+            script{
+                println("THIS IS always in post")
+            }
+        }
+        success{
+            script{
+                println("success")
+            }
+        }
+        failure{
+            script{
+                println("failure")
+            }
+        }
+        aborted{
+            script{
+                println("aborted")
+            }
+        }
+    }
+}
