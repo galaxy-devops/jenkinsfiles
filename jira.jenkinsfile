@@ -1,0 +1,95 @@
+#!groovy
+
+@Library('jenkinslib') _
+
+def gitlab = new org.devops.gitlab()
+
+pipeline{
+    agent any
+    stages{
+        stage("FilterData"){
+            steps{
+                script{
+                    response = readJSON text: """${webHookData}"""
+                    tools.PrintMes("Get the event type","green")
+                    env.eventType = response["webhookEvent"]
+                    println("Jira event type is：${eventType}")
+
+                    switch(eventType) {
+                        case "jira:issue_created":
+                            env.issueName = response['issue']['key']
+                            env.userName = response['user']['name']
+                            env.moduleNames = response['issue']['fields']['components']
+                            env.fixVersion = response['issue']['fields']['fixVersions']
+                            currentBuild.description = "${eventType} - ${issueName} Trigger by ${userName} on Jira"
+                            break
+                        case "jira:issue_updated":
+                            env.issueName = response['issue']['key']
+                            env.userName = response['user']['name']
+                            env.moduleNames = response['issue']['fields']['components']
+                            env.fixVersion = response['issue']['fields']['fixVersions']
+                            currentBuild.description = "${eventType} - ${issueName} Trigger by ${userName} on Jira"
+                            break
+                        case "jira:version_created":
+                            env.versionName = response["version"]["name"]
+                            currentBuild.description = "${eventType} - ${versionName} Trigger by Jira"
+                            break
+                        case "jira:version_released":
+                            env.versionName = response["version"]["name"]
+                            currentBuild.description = "${eventType} - ${versionName} Trigger by Jira"
+                            break
+                        default:
+                            println(">>>>>>    unknown event    <<<<<<")
+                            break
+                    }
+                }
+            }
+        }
+        stage("Create issue branch or MR"){
+            when {
+                anyOf {
+                    environment name: 'eventType', value: 'jira:issue_created'
+                    environment name: 'eventType', value: 'jira:issue_updated'
+                }
+            }
+            steps{
+                script{
+                    def projectIds = []
+                    fixVersion = readJSON text: """${fixVersion}"""
+
+                    def projects = readJSON text: """${moduleNames}"""
+                    for (project in projects) {
+                        projectName = project["name"]
+                        currentBuild.description += "\n project: ${projectName}"
+                        repoName = projectName.split("-")[0]
+                        try {
+                            projectId = gitlab.GetProjectID(repoName, projectName)
+                            projectIds.add(projectId)
+                        } catch(e){
+                            println(e)
+                        }
+                    }
+                    println("list the project ID：${projectIds}")
+
+                    if (fixVersion.size() == 0){
+                        for (id in projectIds) {
+                            println("Create feature branch, project ID： ${id} issue： ${issueName}")
+                            currentBuild.description += "\n New feature branch--> ${issueName}"
+                            gitlab.CreateBranch(id,"main","${issueName}")
+                        }
+                    } else {
+                        fixVersion = fixVersion[0]['name']
+                        currentBuild.description += "\n Associate issue to release ,will generate MR \n ${issueName} --> RELEASE-${fixVersion}"
+
+                        for (id in projectIds) {
+                            println("Create branch RELEASE-${fixVersion}")
+                            gitlab.CreateBranch(id,"main","RELEASE-${fixVersion}")
+                            println("Generate MR ${issueName} ---> RELEASE-${fixVersion}")
+                            gitlab.CreateMr(id,"${issueName}","RELEASE-${fixVersion}","${issueName}--->RELEASE-${fixVersion}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
