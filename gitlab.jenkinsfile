@@ -1,0 +1,115 @@
+#!groovy
+
+@Library('jenkinslib') _
+
+def tools = new org.devops.tools()
+def sonar = new org.devops.sonarqube()
+def sonarapi = new org.devops.sonarapi()
+def artifactory = new org.devops.artifactory()
+
+//define this variable to avoid exception whenever manually build
+def runOpts
+
+String buildType = "${env.buildType}"
+String buildShell = "${env.buildShell}"
+String srcUrl="${env.srcUrl}"
+String branchName="${env.branchName}"
+
+//if true then indicate that from webhook
+//else to show that via manipulation by human being
+if ("${runOpts}" == "GitlabPush"){
+    branchName = branch - "refs/heads/"
+    currentBuild.description = "Trigger by ${userName} ${branchName}"
+} else {
+    currentBuild.description = "Manually trigger building on ${branchName}"
+}
+
+// pipeline
+pipeline{
+    agent any
+    stages{
+        stage('CheckOut'){
+            steps{
+                script{
+                    tools.PrintMes("Retrieve the code","green")
+                    if ("${runOpts}" == "GitlabPush"){
+                        branchName = branch - "refs/heads/"
+                    }
+                    tools.PrintMes("The branch is ${branchName}","green")               
+                    checkout([$class: 'GitSCM', branches: [[name: "${branchName}"]], extensions: [], userRemoteConfigs: [[url: "${srcUrl}"]]])
+                }
+            }
+        }
+
+        stage('build'){
+            steps{
+                script{
+                    tools.PrintMes("Start to build pipeline ","green")
+                    artifactory.main(buildType,buildShell)
+
+                    tools.PrintMes("Upload artifact to store","green")
+                    artifactory.PushArtifact()
+                }
+            }
+        }
+        stage("QA"){
+            steps{
+                script{
+                    tools.PrintMes("Searching project on sonarQube","green")
+                    result = sonarapi.SearchProject("${JOB_NAME}")
+
+                    if (result == "false") {
+                        println("${JOB_NAME} --- project does not exist, will create it --- ${JOB_NAME}")
+                        sonarapi.CreateProject("${JOB_NAME}")
+                    } else {
+                        println("${JOB_NAME} --- project exist")
+                    }
+                    tools.PrintMes("Associate QP for ${JOB_NAME} ","green")
+                    // our pipeline name is demo-maven-service_UAT
+                    // qpName = "demo"
+                    qpName = "${JOB_NAME}".split("-")[0]
+                    sonarapi.ConfigQualityProfiles("${JOB_NAME}","java",qpName)
+                    if (result == "error"){
+                        error "Got problem to quality profile"
+                    }                    
+                    tools.PrintMes("Associate QG for ${JOB_NAME}","green")
+                    result = sonarapi.ConfigQualityGates("${JOB_NAME}",qpName)
+                    if (result == "error"){
+                        error "Got problem to quality gate"
+                    }
+                    tools.PrintMes("Start to evaluate code with sonarQube ","green")
+                    sonar.SonarScan("test","${JOB_NAME}","${JOB_NAME}","src")
+                    tools.PrintMes("Get the result","green")
+                    result = sonarapi.GetProjectStatus("${JOB_NAME}")
+                    if (result.toString().contains("ERROR")){
+                        error "code have something wrong within quality gate, please check it"
+                    }else{
+                        println(result)
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always{
+            script{
+                println("THIS IS always in post")
+            }
+        }
+        success{
+            script{
+                println("success")
+            }
+        }
+        failure{
+            script{
+                println("failure")
+            }
+        }
+        aborted{
+            script{
+                println("aborted")
+            }
+        }
+    }
+}
