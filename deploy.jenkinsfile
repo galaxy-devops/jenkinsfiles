@@ -1,0 +1,29 @@
+#!groovy
+
+@Library('jenkinslib') _
+
+def tools = new org.devops.tools()
+def gitlab = new org.devops.gitlab()
+def k8s = new org.devops.kubernetes()
+
+String stackName = "${env.stackName}"
+String releaseVersion = "${env.releaseVersion}"
+
+pipeline{
+    agent any
+
+    stages{
+        stage("Deploy APP"){
+            steps{
+                script{
+                    tools.PrintMes("Retrieve revision file","green")
+                    stack = "${stackName}".toLowerCase()
+                    // the value 6 is ID of demo-info-service repository on gitlab
+                    // demo-${stack}%2f${releaseVersion}-${stack}.yaml --> demo-stag/1.6-stag.yaml
+                    response = gitlab.GetRepoFile(6,"demo-${stack}%2f${releaseVersion}-${stack}.yaml")
+                    k8s.UpdateDeployment("demo-${stack}","demoapp-stag-deploy",response)
+                }
+            }
+        }
+    }
+}
