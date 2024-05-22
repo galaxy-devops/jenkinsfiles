@@ -1,0 +1,169 @@
+#!groovy
+
+@Library('jenkinslib') _
+
+def tools = new org.devops.tools()
+def gitlab = new org.devops.gitlab()
+def sonar = new org.devops.sonarqube()
+def sonarapi = new org.devops.sonarapi()
+def artifactory = new org.devops.artifactory()
+def k8s = new org.devops.kubernetes()
+
+//define this variable to avoid exception whenever manually build
+def runOpts
+
+String buildType = "${env.buildType}"
+String buildShell = "${env.buildShell}"
+String srcUrl="${env.srcUrl}"
+String branchName="${env.branchName}"
+
+//if true then indicate that from webhook
+//else to show that via manipulation by human being
+if ("${runOpts}" == "GitlabPush"){
+    branchName = branch - "refs/heads/"
+    currentBuild.description = "Trigger by ${userName} ${branchName}"
+} else {
+    currentBuild.description = "Manually trigger building on ${branchName}"
+}
+
+//pipeline
+pipeline{
+    agent any
+    stages{
+        stage('CheckOut'){
+            steps{
+                script{
+                    tools.PrintMes("Retrieve the code","green")
+                    if ("${runOpts}" == "GitlabPush"){
+                        branchName = branch - "refs/heads/"
+                    }
+                    tools.PrintMes("The branch is ${branchName}","green")               
+                    checkout([$class: 'GitSCM', branches: [[name: "${branchName}"]], extensions: [], userRemoteConfigs: [[url: "${srcUrl}"]]])
+                }
+            }
+        }
+        
+        stage('build'){
+            steps{
+                script{
+                    tools.PrintMes("Start to build pipeline ","green")
+                    artifactory.main(buildType,buildShell)
+
+                    tools.PrintMes("Upload artifact to store","green")
+                    artifactory.PushArtifact()
+                }
+            }
+        }
+        
+        stage("QA") {
+            steps{
+                script{
+                    tools.PrintMes("Searching project on sonarQube","green")
+                    result = sonarapi.SearchProject("${JOB_NAME}")
+
+                    if (result == "false") {
+                        println("${JOB_NAME} --- project does not exist, will create it --- ${JOB_NAME}")
+                        sonarapi.CreateProject("${JOB_NAME}")
+                    } else {
+                        println("${JOB_NAME} --- project exist")
+                    }
+                    tools.PrintMes("Associate QP for ${JOB_NAME} ","green")
+                    // our pipeline name is demo-maven-service_UAT
+                    // qpName = "demo"
+                    qpName = "${JOB_NAME}".split("-")[0]
+                    sonarapi.ConfigQualityProfiles("${JOB_NAME}","java",qpName)
+                    if (result == "error"){
+                        error "Got problem to quality profile"
+                    }                    
+                    tools.PrintMes("Associate QG for ${JOB_NAME}","green")
+                    result = sonarapi.ConfigQualityGates("${JOB_NAME}",qpName)
+                    if (result == "error"){
+                        error "Got problem to quality gate"
+                    }
+                    tools.PrintMes("Start to evaluate code with sonarQube ","green")
+                    sonar.SonarScan("test","${JOB_NAME}","${JOB_NAME}","src")
+                    tools.PrintMes("Get the result","green")
+                    result = sonarapi.GetProjectStatus("${JOB_NAME}")
+                    if (result.toString().contains("ERROR")){
+                        error "code have something wrong within quality gate, please check it"
+                    }else{
+                        println(result)
+                    }
+                }
+            }
+        }
+
+
+        stage("BuildImages"){
+            steps{
+                script{
+                    tools.PrintMes("Initiate to build docker image","green")
+                    env.serviceName = "${JOB_NAME}".split("_")[0]
+                    withCredentials([usernamePassword(credentialsId: 'aliyun-registry-admin', passwordVariable: 'password', usernameVariable: 'username')]) {
+                        
+                        env.dockerImage = "registry.cn-beijing.aliyuncs.com/devopstest/${serviceName}:${branchName}"
+                        sh """
+                            docker login -u ${username} -p ${password}  registry.cn-beijing.aliyuncs.com
+                            docker build -t registry.cn-beijing.aliyuncs.com/devopstest/${serviceName}:${branchName} .
+                            sleep 1
+                            docker push registry.cn-beijing.aliyuncs.com/devopstest/${serviceName}:${branchName}
+                            sleep 1
+                            #docker rmi registry.cn-beijing.aliyuncs.com/devopstest/${serviceName}:${branchName}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage("Deploy"){
+            steps{
+                script{
+                    tools.PrintMes("Deploy APP in UAT","green")
+                    releaseVersion = "${branchName}".split("-")[-1]
+                    response = gitlab.GetRepoFile(6,"demo-uat%2f${releaseVersion}.yaml")
+
+                    tools.PrintMes("Initiate to replace image","green")
+                    fileData = readYaml text: """${response}"""
+                    oldImage = fileData["spec"]["template"]["spec"]["containers"][0]["image"] 
+                    oldVersion = fileData["metadata"]["resourceVersion"]
+                    oldUid = fileData["metadata"]["uid"]
+                    response = response.replace(oldImage,dockerImage)
+                    response = response.replace(oldVersion,"")
+                    response = response.replace(oldUid,"")
+                    
+                    tools.PrintMes("Initiate to update file in gitlab","green")
+                    base64Content = response.bytes.encodeBase64().toString()
+                    gitlab.UpdateRepoFile(6,"demo-uat%2f${releaseVersion}.yaml",base64Content)
+                    
+                    tools.PrintMes("Initiate to deploy APP on UAT","green")
+                    k8s.UpdateDeployment("demo-uat","demoapp-uat-deploy",response)
+                }
+            }
+        }
+    }
+
+    post {
+        always{
+            script{
+                println("always")
+            }
+        }
+        
+        success{
+            script{
+                println("success")
+            }
+        }
+        failure{
+            script{
+                println("failure")
+            }
+        }
+        
+        aborted{
+            script{
+                println("aborted")
+            }
+        }
+    }
+}
