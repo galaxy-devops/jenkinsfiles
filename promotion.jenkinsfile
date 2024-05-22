@@ -1,0 +1,64 @@
+#!groovy
+
+@Library('jenkinslib') _
+
+def tools = new org.devops.tools()
+def gitlab = new org.devops.gitlab()
+def k8s = new org.devops.kubernetes()
+
+
+String updateType = "${env.updateType}"
+String releaseVersion = "${env.releaseVersion}"
+
+pipeline{
+    agent any
+
+    stages{
+        stage("UAT to STAG"){
+            when{
+                environment name: 'updateType', value: 'UAT-to-STAG'
+            }
+            steps{
+                script{
+                    tools.PrintMes("UAT to STAG","green")
+                    response = gitlab.GetRepoFile(6,"demo-uat%2f${releaseVersion}.yaml")
+                    fileData = readYaml text: """${response}"""
+                    uatImage = fileData["spec"]["template"]["spec"]["containers"][0]["image"]
+                    
+                    tools.PrintMes("Retrieve image info from demo-uat directory on gitlab","green")
+                    println("From file ${releaseVersion}" + ".yaml" + "got image： ${uatImage}")
+
+                    tools.PrintMes("Retrieve current deployment resource object information from STAG","green")
+                    stagResponse = k8s.GetDeployment("demo-stag","demoapp-stag-deploy")
+                    stagResponse = stagResponse.content
+                    
+                    tools.PrintMes("Retrieve image and version","green")
+                    stagFileData = readYaml text: """${stagResponse}"""
+                    stagOldImage = stagFileData["spec"]["template"]["spec"]["containers"][0]["image"]
+                    stagOldVersion = stagFileData["metadata"]["resourceVersion"]
+                    println("The image from current STAG is：${stagOldImage}")
+                    println("The version from current STAG is：${stagOldVersion}")
+
+                    tools.PrintMes("Initiate update image and version of current STAG","green")
+                    stagResponse = stagResponse.replace(stagOldImage,uatImage)
+                    stagResponse = stagResponse.replace(stagOldVersion,"")
+                    stagNewData = readYaml text: """${stagResponse}"""
+                    println("New image is：" + stagNewData["spec"]["template"]["spec"]["containers"][0]["image"])
+                    println("New version is：" + stagNewData["metadata"]["resourceVersion"])
+
+                    tools.PrintMes("Create latest edition of STAG","green")
+                    base64Content = stagResponse.bytes.encodeBase64().toString()
+
+                    // "uat-to-stag".split("-")[-1].toLowerCase() --> STAG
+                    stack = "${updateType}".split("-")[-1].toLowerCase()
+                    try{
+                        // The value 6 is ID of demo-info-service repo
+                        gitlab.CreateRepoFile(6,"demo-stag%2f${releaseVersion}-${stack}.yaml",base64Content)
+                    } catch(e){
+                        gitlab.UpdateRepoFile(6,"demo-stag%2f${releaseVersion}-${stack}.yaml",base64Content)
+                    }
+                }
+            }
+        }
+    }
+}
