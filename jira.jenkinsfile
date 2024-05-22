@@ -3,6 +3,8 @@
 @Library('jenkinslib') _
 
 def gitlab = new org.devops.gitlab()
+def k8s = new org.devops.kubernetes()
+def jira = new org.devops.jira()
 
 pipeline{
     agent any
@@ -88,6 +90,36 @@ pipeline{
                             gitlab.CreateMr(id,"${issueName}","RELEASE-${fixVersion}","${issueName}--->RELEASE-${fixVersion}")
                         }
                     }
+                }
+            }
+        }
+        stage("CreateVersionFile"){
+            when {
+                environment name: 'eventType', value: 'jira:version_created'
+            }
+            steps{
+                script{
+                    println("Get the file from Deployment")
+                    response = k8s.GetDeployment("demo-uat","demoapp-uat-deploy")
+                    response = response.content
+
+                    println("Upload the file")
+                    base64Content = response.bytes.encodeBase64().toString()
+                    gitlab.CreateRepoFile(6,"demo-uat%2f${versionName}.yaml",base64Content)                                    
+                }
+            }
+        }
+        stage('Release Version'){
+            when {
+                environment name: 'eventType', value: 'jira:version_released'
+            }
+
+            steps{
+                script{
+                    println("project%20%3D%20${projectKey}%20AND%20fixVersion%20%3D%20${versionName}%20AND%20issuetype%20%3D%20Task")
+                    response = jira.RunJql("project%20%3D%20${projectKey}%20AND%20fixVersion%20%3D%20${versionName}%20AND%20issuetype%20%3D%20Task")
+                    response = readJSON text: """${response.content}"""
+                    println(response)
                 }
             }
         }
