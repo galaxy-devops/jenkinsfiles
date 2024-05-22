@@ -4,6 +4,9 @@
 
 def build = new org.devops.build()
 def tools = new org.devops.tools()
+def sonar = new org.devops.sonarqube()
+def sonarapi = new org.devops.sonarapi()
+def artifactory = new org.devops.artifactory()
 
 //define this variable to avoid exception whenever manually build
 def runOpts
@@ -42,8 +45,11 @@ pipeline{
         stage('Build'){
             steps{
                 script{
-                    tools.PrintMes("Start to building","green")
-                    build.Build(buildType,buildShell)
+                    tools.PrintMes("Start to build pipeline ","green")
+                    artifactory.main(buildType,buildShell)
+
+                    tools.PrintMes("Upload artifact to store","green")
+                    artifactory.PushArtifact()
                 }
             }
         }
