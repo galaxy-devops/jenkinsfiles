@@ -109,17 +109,76 @@ pipeline{
                 }
             }
         }
-        stage('Release Version'){
+        stage("Publish release version"){
             when {
                 environment name: 'eventType', value: 'jira:version_released'
             }
 
             steps{
                 script{
-                    println("project%20%3D%20${projectKey}%20AND%20fixVersion%20%3D%20${versionName}%20AND%20issuetype%20%3D%20Task")
                     response = jira.RunJql("project%20%3D%20${projectKey}%20AND%20fixVersion%20%3D%20${versionName}%20AND%20issuetype%20%3D%20Task")
                     response = readJSON text: """${response.content}"""
-                    println(response)
+                    
+                    issueList = [:]
+                    for(issue in response['issues']){
+                        
+                        /**
+                            - traversal and retrieve issue
+                            - define list by key for each issue
+                            - e.g, issue["key"] is "DEV-9", then issueList["DEV-9"]=[]
+                        */
+                        issueList[issue["key"]] = []
+
+                        //retrieve component information
+                        for (component in issue["fields"]["components"]){
+                            issueList[issue["key"]].add(component["name"])
+                        }
+                    }
+                    // e.g [DEV-9:[demo-java-service]]
+                    println("List the issues variable：${issueList}")
+
+                        /**
+                            - Create MR on gitlab
+                            - Confirm MR if merged done then purge branch
+                        */
+
+                    for (issue in issueList.keySet()) {
+
+                        /**
+                            - issueList is [DEV-9:[demo-java-service]]
+                            - issueList.keySet() is [DEV-9]
+                            - issueList[issue] is [demo-java-service]
+                         */
+
+                        for (projectName in issueList[issue]) {
+                            repoName = projectName.split("-")[0]
+                            projectId = gitlab.GetProjectID(repoName,projectName)
+
+                            println("The value of projectId：" + projectId)
+
+                            // Create MR
+                            try{
+                                result = gitlab.CreateMr(projectId,"RELEASE-${versionName}","master","RELEASE-${versionName}--->main")
+                                result = readJSON text: """${result}"""
+                                mergeId = result["iid"]
+
+                                // accept MR
+                                gitlab.AcceptMr(projectId,mergeId)
+                                sleep 5
+                                response = gitlab.GetSingleMr(projectId,mergeId)
+                                if (response == "error"){
+                                    throw new Exception("error")
+                                } else if(response == "merged"){
+                                    gitlab.DeleteBranch(projectId,"RELEASE-${versionName}")
+                                } else {
+                                    throw new Exception("unknown")
+                                }                                                                
+                            } catch(Exception e){
+                                tools.PrintMes("Pipeline got error","red")
+                                println(e)
+                            }
+                        }
+                    }
                 }
             }
         }
